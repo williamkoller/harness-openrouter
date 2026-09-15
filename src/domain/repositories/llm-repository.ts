@@ -1,5 +1,11 @@
 import type { Message, ToolCall } from '../entities/message'
 
+export type ReasoningEffort = "off" | "low" | "medium" | "high";
+
+export interface ChatOptions {
+  reasoning?: ReasoningEffort;
+}
+
 export interface ToolDefinition {
   type: 'function'
   function: {
@@ -11,9 +17,14 @@ export interface ToolDefinition {
 
 export interface LLMResponse {
   content: string | null
+  reasoning: string | null;
   toolCalls: ToolCall[]
 }
 
 export interface LLMRepository {
-  chat(messages: Message[], tools: ToolDefinition[]): Promise<LLMResponse>
+  chat(
+    messages: Message[],
+    tools: ToolDefinition[],
+    options?: ChatOptions,
+  ): Promise<LLMResponse>;
 }

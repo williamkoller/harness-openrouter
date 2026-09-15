@@ -1,21 +1,21 @@
-import type { Message } from '../../domain/entities/message'
+import type { Message } from "../entities/message";
 import type {
-  LLMRepository
-} from '../../domain/repositories/llm-repository'
-import type { ToolRegistry } from './tool-registry'
+  ChatOptions,
+  LLMRepository,
+  ToolDefinition,
+} from "../repositories/llm-repository";
+import type { ToolRegistry } from "./tool-registry";
 
 export type AgentEvent =
+  | { type: "iteration"; index: number }
   | { type: "assistant"; message: Message }
-  | { type: "tool"; message: Message }
-  | { type: "iteration"; index: number };
+  | { type: "tool"; message: Message };
 
 export interface AgentRunOptions {
-  userInput: string;
-  systemPrompt: string;
+  messages: Message[];
   maxIterations?: number;
+  chatOptions?: ChatOptions;
   onEvent?: (event: AgentEvent) => void;
-  /** Histórico prévio (sem system), útil para multi-turn */
-  history?: Message[];
 }
 
 export class AgentService {
@@ -26,35 +26,31 @@ export class AgentService {
 
   async run(opts: AgentRunOptions): Promise<Message[]> {
     const {
-      userInput,
-      systemPrompt,
+      messages,
       maxIterations = 12,
+      chatOptions,
       onEvent,
-      history = [],
     } = opts;
-
-    const messages: Message[] = [
-      { role: "system", content: systemPrompt },
-      ...history,
-      { role: "user", content: userInput },
-    ];
 
     for (let i = 0; i < maxIterations; i++) {
       onEvent?.({ type: "iteration", index: i });
 
-      const response = await this.llm.chat(messages, this.tools.definitions());
+      const response = await this.llm.chat(
+        messages,
+        this.tools.definitions(),
+        chatOptions,
+      );
 
       const assistantMsg: Message = {
         role: "assistant",
         content: response.content,
+        reasoning: response.reasoning,
         ...(response.toolCalls.length > 0 && { tool_calls: response.toolCalls }),
       };
       messages.push(assistantMsg);
       onEvent?.({ type: "assistant", message: assistantMsg });
 
-      if (response.toolCalls.length === 0) {
-        return messages;
-      }
+      if (response.toolCalls.length === 0) return messages;
 
       for (const call of response.toolCalls) {
         const tool = this.tools.get(call.function.name);

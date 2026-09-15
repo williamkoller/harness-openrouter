@@ -1,113 +1,126 @@
-# Harness OpenRouter — Project Summary
+# Project Notes — Harness OpenRouter
 
 ## Overview
 
-**Harness OpenRouter** is a lightweight, extensible coding-agent harness built with **TypeScript**, **Bun**, and the **OpenRouter Chat Completions API**. It implements an iterative agent loop that sends a prompt to an OpenRouter model, exposes local tools through function calling, executes requested tools, and returns their results to the model until it produces a final response.
+**Harness OpenRouter** is a small, extensible coding-agent harness written in
+TypeScript and run with [Bun](https://bun.sh/). It talks to the OpenRouter
+Chat Completions API and implements an iterative agent loop: send messages to a
+model, expose local tools via function calling, execute the requested tools, and
+feed their results back to the model until it returns a final answer.
 
----
+The current entry point is an **interactive REPL**, not a one-shot command.
 
-## Architecture (Clean Architecture)
+## Tech Stack
 
-```
-src/
-├── index.ts                  # Composition root & CLI entrypoint
-├── domain/
-│   ├── entities/             # Conversation message types (Message.ts, ToolCall.ts)
-│   ├── repositories/         # LLMRepository interface (LLM abstraction)
-│   ├── services/             # AgentService (orchestration), ToolRegistry
-│   └── tools/                # Tool contract interface
-├── infrastructure/
-│   ├── config/               # Environment configuration via env.ts
-│   ├── llm/                  # OpenRouterLLMRepository adapter
-│   └── tools/                # Concrete tool implementations:
-│       ├── ReadDirTool.ts
-│       ├── ReadFileTool.ts
-│       ├── WriteFileTool.ts
-│       └── ExecuteBashTool.ts
-```
-
-The domain layer depends **only on interfaces**, not on OpenRouter or filesystem implementations. `src/index.ts` wires everything together at the composition root.
-
----
+- **Language:** TypeScript (ESM, `"type": "module"`)
+- **Runtime / package manager:** Bun
+- **LLM provider:** OpenRouter (`https://openrouter.ai/api/v1`)
+- **Dependencies:** none at runtime; only `@types/bun` and `typescript` as dev deps
 
 ## How It Works
 
-```mermaid
-sequenceDiagram
-    actor User
-    participant CLI
-    participant Agent as AgentService
-    participant OpenRouter
-    participant Tool as Local Tool
+1. The REPL reads a line from the user.
+2. Plain text is treated as a prompt; lines starting with `/` are commands.
+3. `AgentService.run` loops up to `MAX_ITERATIONS` times:
+   - sends conversation + tool definitions to the LLM;
+   - appends the assistant message (content, optional reasoning, tool calls);
+   - if there are no tool calls, the run ends;
+   - otherwise each tool is executed and its output appended as a `tool` message.
+4. Events (`iteration`, `assistant`, `tool`) are streamed back to the REPL for
+   rendering, and the resulting history is committed to the session.
 
-    User->>CLI: Submit prompt
-    CLI->>Agent: Start agent run
-    loop Until final response or iteration limit
-        Agent->>OpenRouter: Send messages and tool definitions
-        OpenRouter-->>Agent: Return text and/or tool calls
-        alt Tool call requested
-            Agent->>Tool: Execute parsed arguments
-            Tool-->>Agent: Return result
-        else Final response
-            Agent-->>CLI: Return conversation
-        end
-    end
-    CLI-->>User: Print final response
+## Architecture
+
+The code follows a lightweight Clean Architecture layout with a composition
+root:
+
+```text
+src/
+├── domain/
+│   ├── entities/message.ts              # Conversation message types
+│   ├── repositories/llm-repository.ts   # LLM abstraction (interface)
+│   ├── services/agent-service.ts        # Agent orchestration loop
+│   ├── services/tool-registry.ts        # Tool registry
+│   └── tools/tool.ts                    # Tool contract
+├── infrastructure/
+│   ├── config/env.ts                    # Environment configuration
+│   ├── llm/openrouter-llm-repository.ts # OpenRouter adapter
+│   └── tools/*.ts                       # Local tool implementations
+├── cli/
+│   ├── repl.ts                          # Interactive REPL + rendering
+│   ├── commands.ts                      # Slash commands
+│   ├── command.ts / parse-command.ts    # Command contract + parsing
+│   ├── session-state.ts                 # Conversation state
+│   └── theme.ts                         # Terminal colors
+└── index.ts                             # Composition root / entry point
 ```
 
----
+The domain layer depends only on interfaces; `src/index.ts` wires the
+repository, registry, tools, session, and REPL together.
 
 ## Built-in Tools
 
-| Tool | Capability | Notes |
-| --- | --- | --- |
-| `read_dir` | List directory entries | Resolves from CWD. |
-| `read_file` | Read UTF-8 files (≤200 KB) | Truncates output. |
-| `write_file` | Write/append text files | Creates parent dirs; can overwrite. |
-| `execute_bash` | Run shell commands | 30s timeout; inherits env. |
+| Tool           | Capability                 | Behavior                                          |
+| -------------- | -------------------------- | ------------------------------------------------- |
+| `read_dir`     | Lists directory entries    | Resolves paths from the process working directory |
+| `read_file`    | Reads UTF-8 files          | Truncates output after ~200 KB                    |
+| `write_file`   | Writes or appends text     | Creates parent directories; can overwrite files   |
+| `execute_bash` | Runs `bash -c` commands    | 30-second default timeout; returns stdout/stderr/exit code |
 
-⚠️ **No sandbox** — tools run with the user's file and shell permissions.
+Tools are **not sandboxed** and resolve arbitrary local paths; the shell tool
+inherits the parent environment.
 
----
+## REPL Commands
 
-## Configuration (via `.env`)
+| Command               | Aliases        | Description                              |
+| --------------------- | -------------- | ---------------------------------------- |
+| `/help`               | `?`            | List available commands                  |
+| `/reasoning [level]`  | `reason`, `r`  | Show/set reasoning effort (`off`–`high`) |
+| `/model [id]`         | —              | Show/set the OpenRouter model            |
+| `/clear`              | —              | Clear conversation history               |
+| `/tools`              | —              | List registered tools                    |
+| `/history`            | —              | Show message counts by role              |
+| `/exit`               | `quit`, `q`    | Exit the REPL                            |
 
-| Variable | Required | Default | Description |
-| --- | --- | --- | --- |
-| `OPENROUTER_API_KEY` | ✅ Yes | — | OpenRouter API key |
-| `OPENROUTER_MODEL` | ❌ No | `deepseek/deepseek-chat` | Model identifier |
-| `AGENT_SYSTEM_PROMPT` | ❌ No | Built-in prompt | System prompt text |
-| `MAX_ITERATIONS` | ❌ No | `12` | Max tool-call loops |
-| `OPENROUTER_BASE_URL` | ❌ No | `https://openrouter.ai/api/v1` | API base URL |
+> Note: command descriptions in `src/cli/commands.ts` are written in Portuguese.
 
----
+## Configuration
 
-## Usage
+Bun loads `.env` automatically at startup.
+
+| Variable               | Required | Default                              | Description                        |
+| ---------------------- | -------- | ------------------------------------ | ---------------------------------- |
+| `OPENROUTER_API_KEY`   | Yes      | —                                    | OpenRouter API key                 |
+| `OPENROUTER_MODEL`     | No       | `deepseek/deepseek-chat`             | Model identifier                   |
+| `AGENT_SYSTEM_PROMPT`  | No       | Built-in concise coding-agent prompt | Applied to every run               |
+| `MAX_ITERATIONS`       | No       | `12`                                 | Max model/tool iterations          |
+| `OPENROUTER_BASE_URL`  | No       | `https://openrouter.ai/api/v1`       | OpenRouter-compatible API base URL |
+| `AGENT_REASONING`      | No       | `medium`                             | Reasoning effort (`off`–`high`)    |
+
+Never commit `.env` or leak the API key.
+
+## Scripts
 
 ```bash
-bun start "Your task prompt"
-bun run dev -- "Your task prompt"   # Watch mode with auto-restart
-bunx tsc --noEmit                   # Type-check only
+bun start        # Run the REPL (bun run src/index.ts)
+bun run dev      # Run with --watch for automatic restart
+bunx tsc --noEmit  # Type-check without emitting
 ```
-
----
-
-## Current Limitations
-
-- No conversation persistence (one prompt per process).
-- No sandbox or approval step for tool execution.
-- No explicit HTTP timeout or retry policy.
-- No automated tests yet.
-
----
 
 ## Extending
 
-- **New tool:** Implement the `Tool` interface from `src/domain/tools/tool.ts` and register in `buildTools()` inside `src/index.ts`.
-- **New provider:** Implement the `LLMRepository` interface and inject it into `AgentService`.
+- **New tool:** implement the `Tool` interface (`src/domain/tools/tool.ts`) with
+  a unique name, description, JSON Schema parameters, and an `execute` method;
+  then register it in `buildTools()` in `src/index.ts`.
+- **New provider:** implement the `LLMRepository` interface and inject the
+  adapter when constructing `AgentService`.
 
----
+## Limitations / Known Gaps
 
-## License
-
-No license specified — source remains under default copyright restrictions.
+- No application-level sandbox or approval step for tool execution.
+- HTTP requests define no explicit timeout or retry policy.
+- Conversation history is in-memory only; nothing is persisted between runs.
+- No automated tests currently exist.
+- Command UI strings and README documentation are partially out of sync (the
+  README describes a one-shot CLI; the code runs an interactive REPL) and the
+  CLI is localized in Portuguese while the README is in English.
