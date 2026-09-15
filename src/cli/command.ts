@@ -1,14 +1,16 @@
 import type { SessionState } from "./session-state";
 import type { ToolRegistry } from "../domain/services/tool-registry";
+import type { SandboxMode } from "../infrastructure/approval/policies";
 
 export interface CommandContext {
   session: SessionState;
   tools: ToolRegistry;
-  /** Atualiza o modelo usado pela LLM (sincroniza repo + session). */
   setModel(model: string): void;
-  /** Pede para o REPL encerrar. */
+  setApproval(mode: SandboxMode): void;
+  getApproval(): SandboxMode;
+  setAnimation(enabled: boolean): void;
+  getAnimation(): boolean;
   exit(): void;
-  /** Printa no stdout do REPL. */
   out(line: string): void;
 }
 

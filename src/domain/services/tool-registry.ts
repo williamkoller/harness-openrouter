@@ -23,11 +23,7 @@ export class ToolRegistry {
   definitions(): ToolDefinition[] {
     return this.all().map((t) => ({
       type: "function",
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: t.parameters,
-      },
+      function: { name: t.name, description: t.description, parameters: t.parameters },
     }));
   }
 }

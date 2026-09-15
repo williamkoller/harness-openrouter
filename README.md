@@ -1,30 +1,152 @@
 # Harness OpenRouter
 
-A small, extensible coding-agent harness built with TypeScript, Bun, and the
+A small, extensible coding-agent CLI built with TypeScript, Bun, and the
 OpenRouter Chat Completions API.
 
-The project implements an agent loop that sends a prompt to an OpenRouter
-model, exposes local tools through function calling, executes requested tools,
-and returns their results to the model until it produces a final response.
+The harness supports interactive and one-shot prompts, local tool calling,
+approval policies, persisted sessions, configurable reasoning effort, and
+resilient HTTP requests.
 
 > [!WARNING]
-> This project gives the selected model access to tools that can read and
-> overwrite files and execute Bash commands with the permissions of the current
-> user. Run it only in a trusted, isolated directory and review prompts before
-> execution.
+> The selected model can request tools that read and overwrite files or execute
+> Bash commands with the permissions of the current user. Use the `ask` or
+> `read-only` approval mode, run the harness in a trusted directory, and inspect
+> tool requests before approving them.
 
 ## Features
 
+- Interactive REPL and one-shot execution
 - OpenRouter-compatible model access
 - Iterative tool-calling agent loop
-- Configurable model, system prompt, API base URL, and iteration limit
-- Dependency inversion through domain interfaces
-- Extensible tool registry
-- Built-in tools for:
-  - listing directories;
-  - reading UTF-8 files;
-  - creating, overwriting, and appending to files;
-  - executing Bash commands with a timeout.
+- Configurable model and reasoning effort
+- Approval policies for read, write, and command execution
+- JSONL session persistence and session resumption
+- HTTP timeout, retry, exponential backoff, and `Retry-After` support
+- Extensible tool registry and dependency-inverted domain interfaces
+- Automated tests and strict TypeScript checking
+
+## Requirements
+
+- [Bun](https://bun.sh/)
+- An [OpenRouter](https://openrouter.ai/) API key
+- An OpenRouter model that supports tool calling
+
+## Quick Start
+
+```bash
+git clone https://github.com/williamkoller/harness-openrouter.git
+cd harness-openrouter
+bun install
+cp .env.example .env
+```
+
+Set your API key in `.env`:
+
+```dotenv
+OPENROUTER_API_KEY=sk-or-v1-your-key
+```
+
+Start the interactive REPL:
+
+```bash
+bun run start
+```
+
+Run one prompt and exit:
+
+```bash
+bun run start -- -p "Inspect this project and explain its architecture"
+```
+
+## CLI Usage
+
+```text
+bun run start
+bun run start -- -p "<prompt>"
+bun run start -- --resume <session-id>
+```
+
+Available flags:
+
+- `-p, --print <prompt>`: run one prompt and exit.
+- `-m, --model <provider/model>`: override `OPENROUTER_MODEL`.
+- `-r, --reasoning <level>`: use `off`, `low`, `medium`, or `high`.
+- `-a, --approval <mode>`: use `auto`, `ask`, `read-only`, or `deny-write`.
+- `--resume <id>`: load a persisted session.
+- `-h, --help`: show CLI help.
+
+Positional arguments are also treated as a one-shot prompt:
+
+```bash
+bun run start -- "List the files in the current directory"
+```
+
+### REPL Commands
+
+- `/help` or `/?`: list commands.
+- `/model [provider/model]`: show or change the model.
+- `/reasoning [level]`: show or change reasoning effort.
+- `/approval [mode]`: show or change the approval mode.
+- `/tools`: list registered tools.
+- `/history`: show message counts by role.
+- `/session`: show the session ID and file path.
+- `/clear`: clear the current persisted history.
+- `/exit`, `/quit`, or `/q`: exit the REPL.
+
+## Approval Modes
+
+- `auto`: allow every tool request without prompting.
+- `ask`: allow read operations and request confirmation for writes and command
+  execution.
+- `read-only`: allow reads and deny writes and command execution.
+- `deny-write`: allow reads and request confirmation for non-read operations.
+
+Approvals can be granted once, for the current session, or denied through the
+interactive prompt.
+
+## Configuration
+
+Bun loads `.env` automatically:
+
+- `OPENROUTER_API_KEY` is required.
+- `OPENROUTER_MODEL` defaults to `deepseek/deepseek-chat`.
+- `OPENROUTER_BASE_URL` defaults to `https://openrouter.ai/api/v1`.
+- `AGENT_SYSTEM_PROMPT` defaults to the built-in concise coding-agent prompt.
+- `MAX_ITERATIONS` defaults to `12`.
+- `AGENT_REASONING` defaults to `medium`.
+- `SANDBOX_MODE` defaults to `ask`.
+- `HTTP_TIMEOUT_MS` defaults to `60000`.
+- `HTTP_MAX_RETRIES` defaults to `3`.
+- `HARNESS_SESSION_DIR` defaults to `.harness/sessions`.
+
+Never commit `.env` or expose the API key in prompts, logs, session files, or
+command output.
+
+## Sessions
+
+Messages are appended as JSONL records under `.harness/sessions` by default.
+Each run receives a generated session ID. Use `/session` to inspect the active
+session and resume it later:
+
+```bash
+bun run start -- --resume 20260915-152257-di9uko
+```
+
+Set `HARNESS_SESSION_DIR` to store sessions elsewhere. Malformed JSONL records
+are skipped when a session is loaded.
+
+## Built-in Tools
+
+- `read_dir`: lists directory entries.
+- `read_file`: reads UTF-8 files and truncates output at approximately 200 KB.
+- `write_file`: creates, overwrites, or appends text and creates parent
+  directories.
+- `execute_bash`: runs `bash -c`, defaults to a 30-second timeout, and truncates
+  stdout and stderr at approximately 100 KB each.
+
+File tools resolve local paths, and command execution inherits the parent
+process environment. Approval policies control whether a request is allowed;
+they do not provide operating-system-level isolation.
 
 ## How It Works
 
@@ -34,168 +156,93 @@ sequenceDiagram
     participant CLI
     participant Agent as AgentService
     participant OpenRouter
+    participant Gate as Approval Gate
     participant Tool as Local Tool
+    participant Store as Session Store
 
     User->>CLI: Submit prompt
+    CLI->>Store: Persist message
     CLI->>Agent: Start agent run
     loop Until final response or iteration limit
         Agent->>OpenRouter: Send messages and tool definitions
         OpenRouter-->>Agent: Return text and/or tool calls
         alt Tool call requested
-            Agent->>Tool: Execute parsed arguments
+            Agent->>Gate: Request approval
+            Gate-->>Agent: Allow or deny
+            Agent->>Tool: Execute approved request
             Tool-->>Agent: Return result
+            Agent->>Store: Persist messages
         else Final response
-            Agent-->>CLI: Return conversation
+            Agent-->>CLI: Return response
         end
     end
-    CLI-->>User: Print final response
+    CLI-->>User: Print response
 ```
-
-## Requirements
-
-- [Bun](https://bun.sh/) installed
-- An [OpenRouter](https://openrouter.ai/) API key
-- A model on OpenRouter that supports tool calling
-
-## Quick Start
-
-1. Clone the repository and enter its directory:
-
-   ```bash
-   git clone https://github.com/williamkoller/harness-openrouter.git
-   cd harness-openrouter
-   ```
-
-2. Install dependencies:
-
-   ```bash
-   bun install
-   ```
-
-3. Create the local environment file:
-
-   ```bash
-   cp .env.example .env
-   ```
-
-4. Set your OpenRouter API key in `.env`:
-
-   ```dotenv
-   OPENROUTER_API_KEY=sk-or-v1-your-key
-   ```
-
-5. Run the agent:
-
-   ```bash
-   bun start "Inspect this project and explain its architecture"
-   ```
-
-## Configuration
-
-Bun loads `.env` automatically when the application starts.
-
-| Variable | Required | Default | Description |
-| --- | --- | --- | --- |
-| `OPENROUTER_API_KEY` | Yes | — | OpenRouter API key. |
-| `OPENROUTER_MODEL` | No | `deepseek/deepseek-chat` | OpenRouter model identifier. |
-| `AGENT_SYSTEM_PROMPT` | No | Built-in concise coding-agent prompt | Instructions applied to every run. |
-| `MAX_ITERATIONS` | No | `12` | Maximum number of model/tool iterations. |
-| `OPENROUTER_BASE_URL` | No | `https://openrouter.ai/api/v1` | OpenRouter-compatible API base URL. |
-
-Never commit `.env` or expose your API key in prompts, logs, or command output.
-
-## Usage
-
-Pass the complete task as CLI arguments:
-
-```bash
-bun start "List the files in the current directory"
-bun start "Read package.json and summarize the available scripts"
-bun start "Create a file named notes.txt containing a project summary"
-```
-
-During execution, the CLI prints the selected model, each agent iteration,
-assistant messages, requested tool calls, abbreviated tool results, and the
-final response.
-
-For development with automatic restart:
-
-```bash
-bun run dev -- "Inspect src and identify the main components"
-```
-
-## Built-in Tools
-
-| Tool | Capability | Relevant behavior |
-| --- | --- | --- |
-| `read_dir` | Lists directory entries | Resolves paths from the process working directory. |
-| `read_file` | Reads UTF-8 files | Truncates output after approximately 200 KB. |
-| `write_file` | Writes or appends text | Creates parent directories and can overwrite existing files. |
-| `execute_bash` | Runs `bash -c` commands | Uses a 30-second timeout by default and returns stdout, stderr, and exit code. |
-
-Tools currently resolve arbitrary local paths and are not sandboxed by the
-application. The shell tool also inherits the parent process environment.
 
 ## Architecture
 
-The code follows a lightweight Clean Architecture approach:
+The project follows a lightweight Clean Architecture approach:
 
 ```text
 src/
+├── cli/                  # Arguments, REPL, rendering, and session state
 ├── domain/
-│   ├── entities/        # Conversation message types
-│   ├── repositories/    # LLM abstraction
-│   ├── services/        # Agent orchestration and tool registry
-│   └── tools/           # Tool contract
+│   ├── approval/         # Approval contracts
+│   ├── entities/         # Conversation messages
+│   ├── repositories/     # LLM and session-store interfaces
+│   ├── services/         # Agent orchestration and tool registry
+│   └── tools/            # Tool contract
 ├── infrastructure/
-│   ├── config/          # Environment configuration
-│   ├── llm/             # OpenRouter adapter
-│   └── tools/           # Local tool implementations
-└── index.ts             # Composition root and CLI entrypoint
+│   ├── approval/         # Policies and approval gate
+│   ├── config/           # Environment configuration
+│   ├── http/             # Timeout and retry support
+│   ├── llm/              # OpenRouter adapter
+│   ├── persistence/      # JSONL session store
+│   └── tools/            # Local tool implementations
+└── index.ts              # Composition root
 ```
 
-The domain layer depends on interfaces rather than OpenRouter or filesystem
-implementations. `src/index.ts` acts as the composition root, wiring the
-repository, registry, tools, and agent service together.
+The domain layer depends on interfaces rather than OpenRouter, the filesystem,
+or terminal implementations. `src/index.ts` wires the concrete adapters at the
+application boundary.
 
 ## Extending the Harness
 
 To add a tool:
 
-1. Implement the `Tool` interface from `src/domain/tools/tool.ts`.
-2. Define a unique name, description, JSON Schema parameters, and `execute`
-   method.
-3. Register the implementation in `buildTools()` in `src/index.ts`.
+1. Implement `Tool` from `src/domain/tools/tool.ts`.
+2. Define its name, category, description, JSON Schema parameters, and
+   `execute` method.
+3. Register it in `buildTools()` in `src/index.ts`.
 
-To support another model provider, implement the `LLMRepository` interface and
-inject the adapter when constructing `AgentService`.
+To support another model provider, implement `LLMRepository` and inject the
+adapter when constructing `AgentService`.
+
+To support another session backend, implement `SessionStore` and inject it into
+`SessionState`.
 
 ## Development
 
-Start the application:
-
 ```bash
-bun run start -- "Your prompt"
+# Watch mode
+bun run dev
+
+# Run all tests
+bun test
+
+# Check application and test types
+bun run typecheck
+bun run typecheck:tests
 ```
 
-Run it in watch mode:
+## Security Notes
 
-```bash
-bun run dev -- "Your prompt"
-```
-
-Check the TypeScript types:
-
-```bash
-bunx tsc --noEmit
-```
-
-## Current Limitations
-
-- Runs one CLI prompt per process; conversation history is not persisted.
-- Tool execution has no application-level sandbox or approval step.
-- HTTP requests do not currently define an explicit timeout or retry policy.
-- The repository does not yet include automated tests.
+- Prefer `ask` unless fully automatic local execution is intentional.
+- Use `read-only` when the agent only needs repository inspection.
+- Review commands and paths before approving tool execution.
+- Run untrusted tasks in a disposable container or virtual machine.
+- Treat persisted sessions as sensitive because they may contain prompts,
+  model responses, tool arguments, and tool output.
 
 ## License
 

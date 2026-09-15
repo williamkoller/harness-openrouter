@@ -2,20 +2,18 @@ import { spawn } from "node:child_process";
 import type { Tool } from "../../domain/tools/tool";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+const MAX_OUTPUT_BYTES = 100_000;
 
 export class ExecuteBashTool implements Tool {
   readonly name = "execute_bash";
-  readonly description =
-    "Execute a shell command (bash -c) and return stdout/stderr/exit code.";
+  readonly category = "exec" as const;
+  readonly description = "Execute a shell command (bash -c) and return stdout/stderr/exit code.";
   readonly parameters = {
     type: "object",
     properties: {
       command: { type: "string", description: "Shell command to execute." },
       cwd: { type: "string", description: "Working directory (optional)." },
-      timeout_ms: {
-        type: "number",
-        description: `Timeout in ms (default ${DEFAULT_TIMEOUT_MS}).`,
-      },
+      timeout_ms: { type: "number", description: `Timeout in ms (default ${DEFAULT_TIMEOUT_MS}).` },
     },
     required: ["command"],
   };
@@ -32,6 +30,8 @@ export class ExecuteBashTool implements Tool {
       let stderr = "";
       let killed = false;
 
+      const cap = (s: string) => (s.length > MAX_OUTPUT_BYTES ? s.slice(0, MAX_OUTPUT_BYTES) + "\n...[truncated]" : s);
+
       const timer = setTimeout(() => {
         killed = true;
         child.kill("SIGKILL");
@@ -44,8 +44,8 @@ export class ExecuteBashTool implements Tool {
         clearTimeout(timer);
         const parts = [
           `exit_code: ${code}${killed ? " (timeout)" : ""}`,
-          stdout ? `stdout:\n${stdout.trimEnd()}` : "",
-          stderr ? `stderr:\n${stderr.trimEnd()}` : "",
+          stdout ? `stdout:\n${cap(stdout).trimEnd()}` : "",
+          stderr ? `stderr:\n${cap(stderr).trimEnd()}` : "",
         ].filter(Boolean);
         resolvePromise(parts.join("\n"));
       });

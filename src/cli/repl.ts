@@ -8,29 +8,47 @@ import { parseCommand } from "./parse-command";
 import { COMMANDS } from "./commands";
 import type { Command, CommandContext } from "./command";
 import { paint } from "./theme";
+import type { Animator } from "./anim/animator";
+import type { SandboxMode } from '../infrastructure/approval/policies'
+import { createRenderer, type Renderer } from './render'
+import type { Message } from '../domain/entities/message'
 
 export interface ReplDeps {
   session: SessionState;
   agent: AgentService;
   tools: ToolRegistry;
+  anim: Animator;
   setModel(model: string): void;
+  getApproval(): SandboxMode;
+  setApproval(mode: SandboxMode): void;
   maxIterations: number;
 }
 
 export class Repl {
   private readonly rl: Interface;
   private readonly commands = new Map<string, Command>();
+  private readonly renderer: Renderer;
   private alive = true;
 
   constructor(private readonly deps: ReplDeps) {
     this.rl = createInterface({ input, output });
+    this.renderer = createRenderer(deps.anim);
     for (const cmd of COMMANDS) {
       this.commands.set(cmd.name, cmd);
       for (const a of cmd.aliases ?? []) this.commands.set(a, cmd);
     }
   }
 
-  async start() {
+  /**
+   * Used by CliApprover. Always clears the spinner first so the prompt
+   * never gets overwritten by an animation frame.
+   */
+  async prompt(question: string): Promise<string> {
+    this.deps.anim.stopAll();
+    return this.rl.question(question);
+  }
+
+  async start(): Promise<void> {
     this.banner();
     while (this.alive) {
       const line = await this.ask();
@@ -38,57 +56,62 @@ export class Repl {
       const trimmed = line.trim();
       if (!trimmed) continue;
 
-      if (trimmed.startsWith("/")) {
-        await this.dispatch(trimmed);
-      } else {
-        await this.runAgent(trimmed);
-      }
+      if (trimmed.startsWith("/")) await this.dispatch(trimmed);
+      else await this.handleUserInput(trimmed);
     }
+    this.deps.anim.stopAll();
     this.rl.close();
-    console.log(paint.gray("\naté logo."));
+    console.log(paint.gray("\nbye."));
   }
 
-  // -------- input --------
+  async runOnce(userInput: string): Promise<void> {
+    await this.handleUserInput(userInput);
+    this.deps.anim.stopAll();
+    this.rl.close();
+  }
 
   private async ask(): Promise<string | null> {
     try {
-      return await this.rl.question(this.prompt());
+      return await this.rl.question(this.promptLine());
     } catch {
-      return null; // Ctrl+D / rl fechado
+      return null;
     }
   }
 
-  private prompt(): string {
-    const { session } = this.deps;
+  private promptLine(): string {
+    const { session, anim } = this.deps;
+    const flag = anim.isEnabled() ? "" : paint.gray(" · anim:off");
     return `${paint.cyan("›")} ${paint.gray(
-      `${shortModel(session.model)} · ${session.reasoning}`,
-    )} `;
+      `${shortModel(session.model)} · ${session.reasoning} · ${this.deps.getApproval()}`,
+    )}${flag} `;
   }
 
-  // -------- dispatch --------
-
-  private async dispatch(line: string) {
+  private async dispatch(line: string): Promise<void> {
     const parsed = parseCommand(line);
     if (!parsed) return;
 
     const cmd = this.commands.get(parsed.name);
     if (!cmd) {
-      console.log(paint.red(`comando desconhecido: /${parsed.name}`));
+      console.log(paint.red(`unknown command: /${parsed.name}`));
       return;
     }
     if (parsed.args[0] === "help") {
       console.log(paint.gray(cmd.usage ?? `/${cmd.name}`));
       return;
     }
-
     await cmd.run(parsed.args, this.ctx());
   }
 
   private ctx(): CommandContext {
+    const { anim } = this.deps;
     return {
       session: this.deps.session,
       tools: this.deps.tools,
       setModel: (m) => this.deps.setModel(m),
+      setApproval: (m) => this.deps.setApproval(m),
+      getApproval: () => this.deps.getApproval(),
+      setAnimation: (v) => anim.setEnabled(v),
+      getAnimation: () => anim.isEnabled(),
       exit: () => {
         this.alive = false;
       },
@@ -96,72 +119,49 @@ export class Repl {
     };
   }
 
-  // -------- agent loop --------
+  private async handleUserInput(userInput: string): Promise<void> {
+    const { session, agent, maxIterations, anim } = this.deps;
 
-  private async runAgent(userInput: string) {
-    const { session, agent, maxIterations } = this.deps;
-    const messages = session.buildMessages(userInput);
+    await session.record({ role: "user", content: userInput });
+
+    const messages: Message[] = [
+      { role: "system", content: session.systemPrompt },
+      ...session.history,
+    ];
+
     const chatOptions: ChatOptions = { reasoning: session.reasoning };
 
     try {
-      const returned = await agent.run({
+      await agent.run({
         messages,
         maxIterations,
         chatOptions,
-        onEvent: (event) => this.renderEvent(event),
+        onEvent: (e) => this.renderer.render(e),
       });
-      session.commitHistory(returned);
     } catch (err) {
-      console.log(paint.red(`erro: ${(err as Error).message}`));
+      anim.stopAll();
+      console.log(paint.red(`error: ${(err as Error).message}`));
+    } finally {
+      anim.stopAll();
+      await session.commit(messages);
     }
     console.log();
   }
 
-  private renderEvent(event: AgentEvent) {
-    switch (event.type) {
-      case "assistant": {
-        const m = event.message;
-        if (m.reasoning) this.renderReasoning(m.reasoning);
-        if (m.content) console.log(`${paint.green("◆")} ${m.content}`);
-        for (const call of m.tool_calls ?? []) {
-          const preview = truncate(call.function.arguments ?? "", 160);
-          console.log(
-            `${paint.magenta("→")} ${paint.bold(call.function.name)} ${paint.gray(preview)}`,
-          );
-        }
-        break;
-      }
-      case "tool": {
-        const name = event.message.name ?? "tool";
-        const content = event.message.content ?? "";
-        const preview = truncate(content.replace(/\n+/g, " ⏎ "), 200);
-        console.log(`${paint.gray("←")} ${paint.dim(`[${name}]`)} ${preview}`);
-        break;
-      }
-      case "iteration":
-        // silencioso — descomente para debug
-        // console.log(paint.gray(`· iter ${event.index + 1}`));
-        break;
-    }
-  }
-
-  private renderReasoning(text: string) {
-    const lines = text.trim().split("\n");
-    console.log(paint.italic(paint.gray("🧠 reasoning:")));
-    for (const l of lines) console.log(paint.italic(paint.gray(`  ${l}`)));
-  }
-
-  // -------- banner --------
-
-  private banner() {
-    const { session } = this.deps;
+  private banner(): void {
+    const { session, anim } = this.deps;
     const line = (s: string) => console.log(paint.gray(`│ ${s}`));
     console.log(paint.gray("╭──────────────────────────────────────────────"));
     line(`${paint.bold("harness")} ${paint.gray("·")} ${paint.cyan(session.model)}`);
     line(
       `${paint.gray("reasoning:")} ${paint.yellow(session.reasoning)}  ` +
-        `${paint.gray("·  /help para comandos")}`,
+        `${paint.gray("·")} ${paint.gray("approval:")} ${paint.yellow(this.deps.getApproval())}`,
     );
+    line(
+      `${paint.gray("session:")} ${paint.gray(session.sessionId)}  ` +
+        `${paint.gray("·")} ${paint.gray("anim:")} ${paint.yellow(anim.isEnabled() ? "on" : "off")}`,
+    );
+    line(paint.gray("/help for commands"));
     console.log(paint.gray("╰──────────────────────────────────────────────\n"));
   }
 }
@@ -169,8 +169,4 @@ export class Repl {
 function shortModel(model: string): string {
   const i = model.indexOf("/");
   return i === -1 ? model : model.slice(i + 1);
-}
-
-function truncate(s: string, n: number): string {
-  return s.length <= n ? s : s.slice(0, n) + "…";
 }

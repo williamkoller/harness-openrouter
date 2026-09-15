@@ -4,11 +4,15 @@
   "type": "module",
   "scripts": {
     "start": "bun run src/index.ts",
-    "dev": "bun --watch src/index.ts"
+    "dev": "bun --watch src/index.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "typecheck:tests": "tsc -p tsconfig.test.json --noEmit"
   },
   "dependencies": {},
   "devDependencies": {
-    "@types/bun": "latest",
+    "@types/bun": "^1.4.2",
+    "@types/node": "^26.6.0",
     "typescript": "^5.4.0"
   }
 }

@@ -1,4 +1,4 @@
-import type { Message, ToolCall } from '../entities/message'
+import type { Message, ToolCall } from "../entities/message";
 
 export type ReasoningEffort = "off" | "low" | "medium" | "high";
 
@@ -7,24 +7,20 @@ export interface ChatOptions {
 }
 
 export interface ToolDefinition {
-  type: 'function'
+  type: "function";
   function: {
-    name: string
-    description: string
-    parameters: Record<string, unknown>
-  }
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
 }
 
 export interface LLMResponse {
-  content: string | null
+  content: string | null;
   reasoning: string | null;
-  toolCalls: ToolCall[]
+  toolCalls: ToolCall[];
 }
 
 export interface LLMRepository {
-  chat(
-    messages: Message[],
-    tools: ToolDefinition[],
-    options?: ChatOptions,
-  ): Promise<LLMResponse>;
+  chat(messages: Message[], tools: ToolDefinition[], options?: ChatOptions): Promise<LLMResponse>;
 }

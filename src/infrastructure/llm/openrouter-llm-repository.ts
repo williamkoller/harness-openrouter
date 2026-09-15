@@ -5,8 +5,9 @@ import type {
   ToolDefinition,
 } from "../../domain/repositories/llm-repository";
 import type { Message } from "../../domain/entities/message";
+import { fetchWithRetry, type RetryOptions } from "../http/fetch-with-retry";
 
-interface OpenRouterChoice {
+interface Choice {
   message: {
     role: "assistant";
     content: string | null;
@@ -16,8 +17,9 @@ interface OpenRouterChoice {
   };
 }
 
-interface OpenRouterChatResponse {
-  choices: OpenRouterChoice[];
+interface ChatResponse {
+  choices: Choice[];
+  error?: { message?: string };
 }
 
 export class OpenRouterLLMRepository implements LLMRepository {
@@ -25,25 +27,18 @@ export class OpenRouterLLMRepository implements LLMRepository {
     private readonly apiKey: string,
     private model: string,
     private readonly baseUrl: string = "https://openrouter.ai/api/v1",
+    private readonly retry: RetryOptions = {},
   ) {}
 
-  setModel(model: string) {
-    this.model = model;
-  }
-
-  getModel() {
-    return this.model;
-  }
+  setModel(model: string) { this.model = model; }
+  getModel() { return this.model; }
 
   async chat(
     messages: Message[],
     tools: ToolDefinition[],
     options: ChatOptions = {},
   ): Promise<LLMResponse> {
-    const body: Record<string, unknown> = {
-      model: this.model,
-      messages,
-    };
+    const body: Record<string, unknown> = { model: this.model, messages };
     if (tools.length > 0) {
       body.tools = tools;
       body.tool_choice = "auto";
@@ -52,29 +47,34 @@ export class OpenRouterLLMRepository implements LLMRepository {
       body.reasoning = { effort: options.reasoning };
     }
 
-    const res = await fetch(`${this.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": "http://localhost",
-        "X-Title": "harness",
+    const res = await fetchWithRetry(
+      `${this.baseUrl}/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "http://localhost",
+          "X-Title": "harness",
+        },
+        body: JSON.stringify(body),
       },
-      body: JSON.stringify(body),
-    });
+      this.retry,
+    );
 
     if (!res.ok) {
       throw new Error(`OpenRouter ${res.status}: ${await res.text()}`);
     }
 
-    const data = (await res.json()) as OpenRouterChatResponse;
+    const data = (await res.json()) as ChatResponse;
     const choice = data.choices?.[0];
-    if (!choice) throw new Error("OpenRouter: empty choices");
+    if (!choice) {
+      throw new Error(`OpenRouter: empty choices${data.error?.message ? ` (${data.error.message})` : ""}`);
+    }
 
     return {
       content: choice.message.content ?? null,
-      reasoning:
-        choice.message.reasoning ?? choice.message.reasoning_content ?? null,
+      reasoning: choice.message.reasoning ?? choice.message.reasoning_content ?? null,
       toolCalls: choice.message.tool_calls ?? [],
     };
   }

@@ -4,15 +4,12 @@ import type { Tool } from "../../domain/tools/tool";
 
 export class ReadDirTool implements Tool {
   readonly name = "read_dir";
-  readonly description =
-    "List files and directories at a given path. Returns entries prefixed with [DIR] or [FILE].";
+  readonly category = "read" as const;
+  readonly description = "List files and directories at a given path. Returns entries prefixed with [DIR] or [FILE].";
   readonly parameters = {
     type: "object",
     properties: {
-      path: {
-        type: "string",
-        description: "Directory path. Defaults to current directory.",
-      },
+      path: { type: "string", description: "Directory path. Defaults to current directory." },
     },
     required: [],
   };
