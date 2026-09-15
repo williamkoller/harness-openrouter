@@ -1,4 +1,5 @@
 import type {
+  ChatOptions,
   LLMRepository,
   LLMResponse,
   ToolDefinition,
@@ -9,6 +10,8 @@ interface OpenRouterChoice {
   message: {
     role: "assistant";
     content: string | null;
+    reasoning?: string | null;
+    reasoning_content?: string | null;
     tool_calls?: LLMResponse["toolCalls"];
   };
 }
@@ -20,13 +23,22 @@ interface OpenRouterChatResponse {
 export class OpenRouterLLMRepository implements LLMRepository {
   constructor(
     private readonly apiKey: string,
-    private readonly model: string,
+    private model: string,
     private readonly baseUrl: string = "https://openrouter.ai/api/v1",
   ) {}
+
+  setModel(model: string) {
+    this.model = model;
+  }
+
+  getModel() {
+    return this.model;
+  }
 
   async chat(
     messages: Message[],
     tools: ToolDefinition[],
+    options: ChatOptions = {},
   ): Promise<LLMResponse> {
     const body: Record<string, unknown> = {
       model: this.model,
@@ -35,6 +47,9 @@ export class OpenRouterLLMRepository implements LLMRepository {
     if (tools.length > 0) {
       body.tools = tools;
       body.tool_choice = "auto";
+    }
+    if (options.reasoning && options.reasoning !== "off") {
+      body.reasoning = { effort: options.reasoning };
     }
 
     const res = await fetch(`${this.baseUrl}/chat/completions`, {
@@ -49,8 +64,7 @@ export class OpenRouterLLMRepository implements LLMRepository {
     });
 
     if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`OpenRouter ${res.status}: ${text}`);
+      throw new Error(`OpenRouter ${res.status}: ${await res.text()}`);
     }
 
     const data = (await res.json()) as OpenRouterChatResponse;
@@ -59,6 +73,8 @@ export class OpenRouterLLMRepository implements LLMRepository {
 
     return {
       content: choice.message.content ?? null,
+      reasoning:
+        choice.message.reasoning ?? choice.message.reasoning_content ?? null,
       toolCalls: choice.message.tool_calls ?? [],
     };
   }

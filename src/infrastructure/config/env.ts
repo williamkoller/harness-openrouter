@@ -12,4 +12,6 @@ export const env = {
     "You are a helpful coding agent. Use tools when useful. Be concise.",
   maxIterations: Number(process.env.MAX_ITERATIONS ?? 12),
   baseUrl: process.env.OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1",
+  reasoning: (process.env.AGENT_REASONING ?? "medium") as
+    | "off" | "low" | "medium" | "high",
 } as const;
